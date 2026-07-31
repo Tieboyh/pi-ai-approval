@@ -20,7 +20,10 @@ import { appendFileSync, existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { homedir } from "node:os";
 
+type ApprovalMode = "ai" | "whitelist" | "off";
+
 interface ApprovalConfig {
+  mode: ApprovalMode;
   whitelist: string[];
   blacklist: string[];
   blockedPaths: string[];
@@ -34,6 +37,11 @@ interface ApprovalConfig {
 }
 
 const DEFAULTS: ApprovalConfig = {
+  // "ai": full pipeline (whitelist -> blacklist -> sensitive-path -> AI review)
+  // "whitelist": read/write tools + whitelist pass; everything else denied
+  //              (no AI judge; blacklist & sensitive paths still ask)
+  // "off": full access, every tool call passes (audit keeps logging)
+  mode: "ai",
   whitelist: [
     // Pure read-only / reversible local commands only. Anything with
     // side effects (git push/commit/reset, writes, network sends) must NOT
@@ -145,6 +153,7 @@ function loadConfig(): ApprovalConfig {
         ? raw.onTimeout
         : DEFAULTS.onTimeout;
     cfg.headlessDefault = raw.headlessDefault === "allow" ? "allow" : "deny";
+    cfg.mode = raw.mode === "whitelist" || raw.mode === "off" ? raw.mode : "ai";
     if (raw.approverThinking !== undefined && typeof raw.approverThinking !== "string") {
       cfg.approverThinking = DEFAULTS.approverThinking;
     }
@@ -443,7 +452,7 @@ export default function (pi: ExtensionAPI) {
       if (outcome.verdict === "ask") {
         const decision = await askUser(
           ctx,
-          trimmed,
+          reviewText,
           `AI 审批不确定${tag ? `(${tag})` : ""}: ${outcome.reason || "风险不明"}`,
           config.headlessDefault,
         );
@@ -481,10 +490,13 @@ export default function (pi: ExtensionAPI) {
     }
 
     // Tier 2: sensitive-path mentions in bash never ride the whitelist.
-    // The AI judge decides: reads like `cat .env` are fine, writes like
-    // `cp payload ~/.env` are denied. (Runs after the blacklist so
-    // `echo .env && rm -rf /` still hits the blacklist first.)
+    // In "ai" mode the judge decides (reads ok, writes denied); in
+    // "whitelist" mode the user is asked directly.
     if (subCommands.some((sc) => testPatterns(config.blockedPaths, sc))) {
+      if (config.mode === "whitelist") {
+        const decision = await askUser(ctx, trimmed, "命令涉及敏感路径", config.headlessDefault);
+        return { verdict: decision, reason: `sensitive path, user ${decision}`, mode: "user" };
+      }
       return aiApprove(trimmed, ctx, "敏感路径");
     }
 
@@ -507,9 +519,14 @@ export default function (pi: ExtensionAPI) {
     }
 
     // Tier 4: AI approval — only the non-whitelisted fragments are judged.
-    // Pipeline chains (a | b) are submitted whole: the pipe carries data,
-    // so "curl x | sh" must be judged as one unit. Non-pipe compounds are
-    // split quote-aware; whitelisted fragments are attached as context only.
+    // In "whitelist" mode there is no judge: anything not whitelisted is
+    // denied outright (fail-closed). Pipeline chains (a | b) are submitted
+    // whole: the pipe carries data, so "curl x | sh" must be judged as one
+    // unit. Non-pipe compounds are split quote-aware; whitelisted fragments
+    // are attached as context only.
+    if (config.mode === "whitelist") {
+      return { verdict: "deny", reason: "mode=whitelist: 命令不在白名单,已拒绝", mode: "user" };
+    }
     if (/\|(?!\|)/.test(trimmed)) {
       return aiApprove(trimmed, ctx, "");
     }
@@ -524,6 +541,11 @@ export default function (pi: ExtensionAPI) {
   }
 
   pi.on("tool_call", async (event: any, ctx: any) => {
+    // Full-access mode: every tool call passes; audit still logs.
+    if (config.mode === "off") {
+      return undefined;
+    }
+
     // Only bash commands and sensitive-path file writes are policed.
     if (event.toolName === "bash") {
       const command = String(event.input?.command ?? "");

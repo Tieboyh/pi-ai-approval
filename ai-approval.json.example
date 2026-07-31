@@ -1,4 +1,5 @@
 {
+  "mode": "ai",  // ai | whitelist | off
   "whitelist": [
     "这里可追加自定义白名单正则(仅只读/可逆命令,勿放解释器/写操作)"
   ],
