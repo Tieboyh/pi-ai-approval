@@ -10,5 +10,6 @@
   "onTimeout": "ask",
   "headlessDefault": "deny",
   "cacheTtlMs": 60000,
-  "approverModel": "deepseek/deepseek-v4-flash"
+  "approverModel": "deepseek/deepseek-v4-flash",
+  "approverThinking": "low"
 }
