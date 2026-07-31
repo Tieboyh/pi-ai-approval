@@ -541,6 +541,18 @@ export default function (pi: ExtensionAPI) {
   }
 
   pi.on("tool_call", async (event: any, ctx: any) => {
+    // Fail-closed: any internal error blocks the call rather than letting
+    // it through silently (a buggy extension must not become a bypass).
+    try {
+      return await handleToolCall(event, ctx);
+    } catch (err) {
+      const detail = String(err instanceof Error ? err.message : err).slice(0, 300);
+      audit(config, { tool: event?.toolName, verdict: "deny", reason: `extension error: ${detail}`, mode: "error" });
+      return { block: true, reason: `审批扩展内部错误,已安全拒绝: ${detail}` };
+    }
+  });
+
+  async function handleToolCall(event: any, ctx: any): Promise<any> {
     // Full-access mode: every tool call passes; audit still logs.
     if (config.mode === "off") {
       return undefined;
@@ -585,5 +597,5 @@ export default function (pi: ExtensionAPI) {
     }
 
     return undefined;
-  });
+  }
 }
