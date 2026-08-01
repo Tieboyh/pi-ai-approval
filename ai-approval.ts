@@ -558,22 +558,39 @@ export default function (pi: ExtensionAPI) {
     handler: async (args: string, ctx: any) => {
       const arg = (args || "").trim().toLowerCase();
       const MODES: ApprovalMode[] = ["ai", "whitelist", "off"];
-      const HELP =
-        "当前模式: " + config.mode + " — 用法: /approval ai(完整审批) | whitelist(仅白名单) | off(完全放权)";
-      if (!arg) {
-        ctx.ui?.notify?.(HELP, "info");
-        return HELP;
+      const LABELS: Record<string, string> = {
+        ai: "ai — 完整审批(白名单→黑名单→敏感路径→AI 评审)",
+        whitelist: "whitelist — 仅白名单(读/写+白名单放行,其余拒绝)",
+        off: "off — 完全放权(全部放行,审计继续记录)",
+      };
+      let choice = arg;
+
+      // No argument -> interactive picker when a UI is available.
+      if (!choice && ctx.hasUI) {
+        const picked = await ctx.ui.select(
+          `当前模式: ${config.mode}。选择权限模式:`,
+          [LABELS.ai, LABELS.whitelist, LABELS.off],
+        );
+        if (!picked) return "已取消,保持当前模式: " + config.mode;
+        choice = Object.keys(LABELS).find((k) => picked.startsWith(k)) ?? "";
       }
-      if (!(MODES as string[]).includes(arg)) {
-        const msg = `无效模式: ${arg},可选 ai / whitelist / off`;
+
+      if (!choice) {
+        const msg =
+          "当前模式: " + config.mode + " — 用法: /approval ai | whitelist | off,或无参数弹出选择菜单";
+        ctx.ui?.notify?.(msg, "info");
+        return msg;
+      }
+      if (!(MODES as string[]).includes(choice)) {
+        const msg = `无效模式: ${choice},可选 ai / whitelist / off`;
         ctx.ui?.notify?.(msg, "error");
         return msg;
       }
       // Persist to ai-approval.json, preserving any other settings.
       const p = join(homedir(), ".pi", "agent", "ai-approval.json");
-      let merged: Record<string, unknown> = { mode: arg };
+      let merged: Record<string, unknown> = { mode: choice };
       try {
-        if (existsSync(p)) merged = { ...JSON.parse(readFileSync(p, "utf8")), mode: arg };
+        if (existsSync(p)) merged = { ...JSON.parse(readFileSync(p, "utf8")), mode: choice };
       } catch {
         /* corrupted config -> start fresh */
       }
@@ -584,8 +601,8 @@ export default function (pi: ExtensionAPI) {
         ctx.ui?.notify?.(msg, "error");
         return msg;
       }
-      config.mode = arg as ApprovalMode; // hot-swap in memory
-      const msg = `权限模式已切换为: ${arg}`;
+      config.mode = choice as ApprovalMode; // hot-swap in memory
+      const msg = `权限模式已切换为: ${choice}`;
       ctx.ui?.notify?.(msg, "success");
       return msg;
     },
