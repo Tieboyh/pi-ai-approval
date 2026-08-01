@@ -16,7 +16,7 @@
 // Audit log: ~/.pi/agent/ai-approval.log (JSON lines), disable with "".
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { spawn } from "node:child_process";
-import { appendFileSync, existsSync, readFileSync } from "node:fs";
+import { appendFileSync, existsSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { homedir } from "node:os";
 
@@ -550,6 +550,45 @@ export default function (pi: ExtensionAPI) {
       audit(config, { tool: event?.toolName, verdict: "deny", reason: `extension error: ${detail}`, mode: "error" });
       return { block: true, reason: `审批扩展内部错误,已安全拒绝: ${detail}` };
     }
+  });
+
+  // /approval — view or switch the policy mode without touching files.
+  pi.registerCommand("approval", {
+    description: "权限模式: /approval 查看, /approval ai|whitelist|off 切换",
+    handler: async (args: string, ctx: any) => {
+      const arg = (args || "").trim().toLowerCase();
+      const MODES: ApprovalMode[] = ["ai", "whitelist", "off"];
+      const HELP =
+        "当前模式: " + config.mode + " — 用法: /approval ai(完整审批) | whitelist(仅白名单) | off(完全放权)";
+      if (!arg) {
+        ctx.ui?.notify?.(HELP, "info");
+        return HELP;
+      }
+      if (!(MODES as string[]).includes(arg)) {
+        const msg = `无效模式: ${arg},可选 ai / whitelist / off`;
+        ctx.ui?.notify?.(msg, "error");
+        return msg;
+      }
+      // Persist to ai-approval.json, preserving any other settings.
+      const p = join(homedir(), ".pi", "agent", "ai-approval.json");
+      let merged: Record<string, unknown> = { mode: arg };
+      try {
+        if (existsSync(p)) merged = { ...JSON.parse(readFileSync(p, "utf8")), mode: arg };
+      } catch {
+        /* corrupted config -> start fresh */
+      }
+      try {
+        writeFileSync(p, JSON.stringify(merged, null, 2) + "\n", { mode: 0o600 });
+      } catch (e) {
+        const msg = `写入配置失败: ${String(e)}`;
+        ctx.ui?.notify?.(msg, "error");
+        return msg;
+      }
+      config.mode = arg as ApprovalMode; // hot-swap in memory
+      const msg = `权限模式已切换为: ${arg}`;
+      ctx.ui?.notify?.(msg, "success");
+      return msg;
+    },
   });
 
   async function handleToolCall(event: any, ctx: any): Promise<any> {
